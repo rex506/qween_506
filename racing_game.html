@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Racing Game - Neural Network Ready</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background: #333;
+            font-family: Arial, sans-serif;
+        }
+        canvas {
+            display: block;
+            margin: 0 auto;
+            background: #4a8c4a;
+        }
+        #info {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: white;
+            font-size: 20px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.8);
+        }
+    </style>
+</head>
+<body>
+    <div id="info">
+        Скорость: <span id="speed">0</span> км/ч<br>
+        Время круга: <span id="lapTime">0.00</span> с<br>
+        Лучший круг: <span id="bestLap">--</span> с
+    </div>
+    <canvas id="gameCanvas"></canvas>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        
+        // Устанавливаем размер канваса на всё окно
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+        
+        // Параметры игры
+        const centerX = canvas.width / 2;
+        const centerY = canvas.height / 2;
+        const trackInnerRadius = 150;
+        const trackOuterRadius = 250;
+        const trackCenterRadius = (trackInnerRadius + trackOuterRadius) / 2;
+        
+        // Старт-финишная линия (перпендикулярно треку, на правой стороне)
+        const startFinishAngle = 0; // Правая сторона (3 часа)
+        
+        // Машина
+        const car = {
+            x: centerX + trackCenterRadius,
+            y: centerY,
+            angle: -Math.PI / 2, // Направлена вверх по касательной
+            speed: 0,
+            maxSpeed: 10,
+            acceleration: 0.15,
+            friction: 0.98,
+            offRoadFriction: 0.95,
+            offRoadAcceleration: 0.05,
+            width: 24,
+            length: 40,
+            color: '#ff3333'
+        };
+        
+        // Управление
+        const keys = {
+            ArrowUp: false,
+            ArrowDown: false,
+            ArrowLeft: false,
+            ArrowRight: false
+        };
+        
+        // Время круга
+        let lapStartTime = null;
+        let currentLapTime = 0;
+        let bestLapTime = null;
+        let lastCrossedStartFinish = false;
+        
+        // Обработчики событий
+        window.addEventListener('keydown', (e) => {
+            if (keys.hasOwnProperty(e.code)) {
+                keys[e.code] = true;
+            }
+        });
+        
+        window.addEventListener('keyup', (e) => {
+            if (keys.hasOwnProperty(e.code)) {
+                keys[e.code] = false;
+            }
+        });
+        
+        window.addEventListener('resize', () => {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            // Обновляем центр при ресайзе
+            updateCarPositionOnResize();
+        });
+        
+        function updateCarPositionOnResize() {
+            const newCenterX = canvas.width / 2;
+            const newCenterY = canvas.height / 2;
+            const deltaX = newCenterX - centerX;
+            const deltaY = newCenterY - centerY;
+            car.x += deltaX;
+            car.y += deltaY;
+        }
+        
+        // Проверка, находится ли машина на трассе
+        function isOnTrack(x, y) {
+            const dx = x - centerX;
+            const dy = y - centerY;
+            const distance = Math.sqrt(dx * dx + dy * dy);
+            return distance >= trackInnerRadius && distance <= trackOuterRadius;
+        }
+        
+        // Проверка пересечения старт-финишной линии
+        function checkStartFinishLine(x, y, prevX, prevY) {
+            const dx = x - centerX;
+            const dy = y - centerY;
+            const angle = Math.atan2(dy, dx);
+            
+            // Нормализуем угол в диапазон [0, 2π)
+            let normalizedAngle = angle;
+            if (normalizedAngle < 0) normalizedAngle += 2 * Math.PI;
+            
+            const prevDx = prevX - centerX;
+            const prevDy = prevY - centerY;
+            const prevAngle = Math.atan2(prevDy, prevDx);
+            let prevNormalizedAngle = prevAngle;
+            if (prevNormalizedAngle < 0) prevNormalizedAngle += 2 * Math.PI;
+            
+            // Проверяем пересечение линии старта (угол 0)
+            // Машина пересекает линию, когда переходит из отрицательных углов в положительные
+            // или наоборот, но мы хотим только направление по часовой стрелке
+            
+            // Простая проверка: если предыдущий угол был близок к 2π, а текущий близок к 0
+            const crossedForward = (prevNormalizedAngle > Math.PI * 1.8 && normalizedAngle < Math.PI * 0.2);
+            
+            return crossedForward;
+        }
+        
+        function update() {
+            const prevX = car.x;
+            const prevY = car.y;
+            
+            // Управление
+            const onTrack = isOnTrack(car.x, car.y);
+            const currentMaxSpeed = onTrack ? car.maxSpeed : car.maxSpeed * 0.4;
+            const currentAcceleration = onTrack ? car.acceleration : car.offRoadAcceleration;
+            const currentFriction = onTrack ? car.friction : car.offRoadFriction;
+            
+            if (keys.ArrowUp) {
+                car.speed += currentAcceleration;
+            }
+            if (keys.ArrowDown) {
+                car.speed -= currentAcceleration;
+            }
+            
+            // Поворот только если есть скорость
+            if (Math.abs(car.speed) > 0.1) {
+                const turnSpeed = 0.04 * (car.speed / car.maxSpeed);
+                if (keys.ArrowLeft) {
+                    car.angle -= turnSpeed;
+                }
+                if (keys.ArrowRight) {
+                    car.angle += turnSpeed;
+                }
+            }
+            
+            // Применяем трение и ограничиваем скорость
+            car.speed *= currentFriction;
+            car.speed = Math.max(-currentMaxSpeed / 2, Math.min(currentMaxSpeed, car.speed));
+            
+            // Движение
+            car.x += Math.cos(car.angle) * car.speed;
+            car.y += Math.sin(car.angle) * car.speed;
+            
+            // Проверка старт-финишной линии
+            const crossedStartFinish = checkStartFinishLine(car.x, car.y, prevX, prevY);
+            
+            if (crossedStartFinish) {
+                if (!lastCrossedStartFinish) {
+                    // Завершение круга
+                    if (lapStartTime !== null) {
+                        currentLapTime = (Date.now() - lapStartTime) / 1000;
+                        if (bestLapTime === null || currentLapTime < bestLapTime) {
+                            bestLapTime = currentLapTime;
+                        }
+                    }
+                    // Начинаем новый круг
+                    lapStartTime = Date.now();
+                    currentLapTime = 0;
+                }
+                lastCrossedStartFinish = true;
+            } else {
+                lastCrossedStartFinish = false;
+            }
+            
+            // Обновление времени текущего круга
+            if (lapStartTime !== null) {
+                currentLapTime = (Date.now() - lapStartTime) / 1000;
+            }
+            
+            // Обновление отображения
+            document.getElementById('speed').textContent = Math.abs(Math.round(car.speed * 10));
+            document.getElementById('lapTime').textContent = currentLapTime.toFixed(2);
+            document.getElementById('bestLap').textContent = bestLapTime !== null ? bestLapTime.toFixed(2) : '--';
+        }
+        
+        function drawTrack() {
+            // Рисуем траву (фон уже зеленый)
+            
+            // Рисуем асфальт трека
+            ctx.beginPath();
+            ctx.arc(centerX, centerY, trackOuterRadius, 0, Math.PI * 2);
+            ctx.arc(centerX, centerY, trackInnerRadius, 0, Math.PI * 2, true);
+            ctx.fillStyle = '#555';
+            ctx.fill();
+            
+            // Границы трека
+            ctx.beginPath();
+            ctx.arc(centerX, centerY, trackOuterRadius, 0, Math.PI * 2);
+            ctx.strokeStyle = '#fff';
+            ctx.lineWidth = 3;
+            ctx.stroke();
+            
+            ctx.beginPath();
+            ctx.arc(centerX, centerY, trackInnerRadius, 0, Math.PI * 2);
+            ctx.stroke();
+            
+            // Старт-финишная линия (перпендикулярно треку)
+            const startX = centerX + trackInnerRadius * Math.cos(startFinishAngle);
+            const startY = centerY + trackInnerRadius * Math.sin(startFinishAngle);
+            const endX = centerX + trackOuterRadius * Math.cos(startFinishAngle);
+            const endY = centerY + trackOuterRadius * Math.sin(startFinishAngle);
+            
+            ctx.beginPath();
+            ctx.moveTo(startX, startY);
+            ctx.lineTo(endX, endY);
+            ctx.strokeStyle = '#fff';
+            ctx.lineWidth = 5;
+            ctx.setLineDash([10, 5]);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            
+            // Надпись "START/FINISH"
+            ctx.save();
+            ctx.translate((startX + endX) / 2, (startY + endY) / 2);
+            ctx.rotate(startFinishAngle - Math.PI / 2);
+            ctx.fillStyle = '#fff';
+            ctx.font = 'bold 16px Arial';
+            ctx.textAlign = 'center';
+            ctx.fillText('START', 0, -5);
+            ctx.fillText('FINISH', 0, 15);
+            ctx.restore();
+        }
+        
+        function drawCar() {
+            ctx.save();
+            ctx.translate(car.x, car.y);
+            ctx.rotate(car.angle);
+            
+            // Корпус машины
+            ctx.fillStyle = car.color;
+            ctx.fillRect(-car.length / 2, -car.width / 2, car.length, car.width);
+            
+            // Перед машины (более светлый)
+            ctx.fillStyle = '#ff6666';
+            ctx.fillRect(car.length / 2 - 8, -car.width / 2, 8, car.width);
+            
+            // Зад машины (более темный)
+            ctx.fillStyle = '#cc0000';
+            ctx.fillRect(-car.length / 2, -car.width / 2, 8, car.width);
+            
+            // Фары спереди
+            ctx.fillStyle = '#ffff00';
+            ctx.beginPath();
+            ctx.arc(car.length / 2 - 2, -car.width / 2 + 4, 3, 0, Math.PI * 2);
+            ctx.arc(car.length / 2 - 2, car.width / 2 - 4, 3, 0, Math.PI * 2);
+            ctx.fill();
+            
+            // Стоп-сигналы сзади
+            ctx.fillStyle = '#ff0000';
+            ctx.beginPath();
+            ctx.arc(-car.length / 2 + 2, -car.width / 2 + 4, 2, 0, Math.PI * 2);
+            ctx.arc(-car.length / 2 + 2, car.width / 2 - 4, 2, 0, Math.PI * 2);
+            ctx.fill();
+            
+            // Лобовое стекло
+            ctx.fillStyle = '#3366ff';
+            ctx.fillRect(0, -car.width / 2 + 3, 12, car.width - 6);
+            
+            ctx.restore();
+        }
+        
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            drawTrack();
+            drawCar();
+            
+            // Индикатор выезда за трассу
+            if (!isOnTrack(car.x, car.y)) {
+                ctx.fillStyle = 'rgba(255, 0, 0, 0.3)';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                
+                ctx.fillStyle = '#ff0000';
+                ctx.font = 'bold 24px Arial';
+                ctx.textAlign = 'center';
+                ctx.fillText('ВНЕ ТРАССЫ!', canvas.width / 2, 50);
+            }
+        }
+        
+        function gameLoop() {
+            update();
+            draw();
+            requestAnimationFrame(gameLoop);
+        }
+        
+        // Инициализация
+        lapStartTime = Date.now();
+        gameLoop();
+    </script>
+</body>
+</html>
